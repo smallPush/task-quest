@@ -3,8 +3,13 @@
 TaskQuest is a gamified task manager for your terminal. It transforms your daily productivity into an RPG-style progression system where you earn XP, level up, and evolve your character avatar.
 
 ## 📂 Database Location
-All your progress, task history, and evolution data is stored in a JSON database located at:
-**`~/.taskquest.json`**
+All your progress, task history, and evolution data is stored in a Markdown-based directory structure located at:
+**`~/.taskquest/`**
+
+The directory contains:
+- `status.md`: Global stats (e.g., XP)
+- `tasks/`: Directory containing active tasks as individual `.md` files
+- `history/`: Directory containing completed tasks and good deeds as individual `.md` files
 
 ---
 
