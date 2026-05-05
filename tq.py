@@ -4,7 +4,8 @@ import sys
 import argparse
 from datetime import datetime
 
-DATA_FILE = os.path.expanduser("~/.taskquest.json")
+DATA_DIR = os.path.expanduser("~/.taskquest")
+LEGACY_DATA_FILE = os.path.expanduser("~/.taskquest.json")
 
 # RPG Constants
 XP_PER_LEVEL = 1000
@@ -86,15 +87,158 @@ BOLD = "\033[1m"
 RED = "\033[91m"
 ENDC = "\033[0m"
 
+def parse_markdown(filepath):
+    with open(filepath, "r") as f:
+        content = f.read()
+
+    lines = content.splitlines()
+    item = {}
+    body = []
+    in_frontmatter = False
+    frontmatter_count = 0
+
+    for line in lines:
+        if line.strip() == "---" and frontmatter_count < 2:
+            in_frontmatter = not in_frontmatter
+            frontmatter_count += 1
+            continue
+
+        if in_frontmatter:
+            if ":" in line:
+                key, val = line.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                # Type inference
+                if val.isdigit():
+                    val = int(val)
+                elif val.lower() == "true":
+                    val = True
+                elif val.lower() == "false":
+                    val = False
+                elif val.startswith('"') and val.endswith('"'):
+                    val = val[1:-1]
+                # Special handling for habits list which might have been serialized as string
+                if key == "habits" and val.startswith("[") and val.endswith("]"):
+                    try:
+                        import ast
+                        val = ast.literal_eval(val)
+                    except:
+                        pass
+                item[key] = val
+        else:
+            body.append(line)
+
+    desc = "\n".join(body).strip()
+    if desc:
+        item["desc"] = desc
+
+    return item
+
+def write_markdown(item, filepath):
+    with open(filepath, "w") as f:
+        f.write("---\n")
+        # Keep id first if it exists, otherwise type, etc. for cleaner viewing
+        keys = list(item.keys())
+        keys.remove("desc") if "desc" in keys else None
+
+        # Ensure id is at the front if it exists
+        if "id" in keys:
+            keys.remove("id")
+            keys.insert(0, "id")
+
+        for key in keys:
+            val = item[key]
+            if isinstance(val, str):
+                f.write(f'{key}: "{val}"\n')
+            else:
+                f.write(f"{key}: {val}\n")
+        f.write("---\n\n")
+
+        if "desc" in item:
+            f.write(f"{item['desc']}\n")
+
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"xp": 0, "tasks": [], "history": [], "habits": []}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+    data = {"xp": 0, "tasks": [], "history": [], "habits": []}
+
+    if not os.path.exists(DATA_DIR):
+        # Migration from legacy JSON if it exists
+        if os.path.exists(LEGACY_DATA_FILE):
+            with open(LEGACY_DATA_FILE, "r") as f:
+                data = json.load(f)
+            # Make sure to return so it can trigger a save_data later
+            return data
+        else:
+            return data
+
+    # Load status
+    status_file = os.path.join(DATA_DIR, "status.md")
+    if os.path.exists(status_file):
+        status_data = parse_markdown(status_file)
+        data["xp"] = status_data.get("xp", 0)
+        data["habits"] = status_data.get("habits", [])
+
+    # Load tasks
+    tasks_dir = os.path.join(DATA_DIR, "tasks")
+    if os.path.exists(tasks_dir):
+        for filename in os.listdir(tasks_dir):
+            if filename.endswith(".md"):
+                item = parse_markdown(os.path.join(tasks_dir, filename))
+                data["tasks"].append(item)
+    # Sort tasks by ID to keep logical order
+    data["tasks"].sort(key=lambda x: x.get("id", 0))
+
+    # Load history
+    history_dir = os.path.join(DATA_DIR, "history")
+    if os.path.exists(history_dir):
+        for filename in os.listdir(history_dir):
+            if filename.endswith(".md"):
+                item = parse_markdown(os.path.join(history_dir, filename))
+                data["history"].append(item)
+    # History can be sorted by completed_at or date
+    data["history"].sort(key=lambda x: x.get("completed_at", x.get("date", "")))
+
+    return data
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    # Ensure directories exist
+    tasks_dir = os.path.join(DATA_DIR, "tasks")
+    history_dir = os.path.join(DATA_DIR, "history")
+    os.makedirs(tasks_dir, exist_ok=True)
+    os.makedirs(history_dir, exist_ok=True)
+
+    # Write status.md
+    status_file = os.path.join(DATA_DIR, "status.md")
+    status_item = {"xp": data.get("xp", 0)}
+    # Add habits if they exist and are non-empty
+    if data.get("habits"):
+        status_item["habits"] = data["habits"]
+    write_markdown(status_item, status_file)
+
+    # Clear old tasks before writing new ones to ensure deleted/completed tasks are actually removed
+    for filename in os.listdir(tasks_dir):
+        if filename.endswith(".md"):
+            os.remove(os.path.join(tasks_dir, filename))
+
+    # Write tasks
+    for task in data.get("tasks", []):
+        task_id = task.get("id", "0")
+        filepath = os.path.join(tasks_dir, f"task_{task_id}.md")
+        write_markdown(task, filepath)
+
+    # Write history
+    # Clear old history first to ensure no old files linger and no accidental overwrites due to naming bugs
+    for filename in os.listdir(history_dir):
+        if filename.endswith(".md"):
+            os.remove(os.path.join(history_dir, filename))
+
+    for i, action in enumerate(data.get("history", [])):
+        # determine timestamp
+        ts = action.get("completed_at") or action.get("date") or datetime.now().isoformat()
+        # safe filename, adding index to guarantee uniqueness for items with same timestamp
+        safe_ts = ts.replace(":", "-").replace(".", "-")
+        filename = f"hist_{safe_ts}_{i}.md"
+        filepath = os.path.join(history_dir, filename)
+        write_markdown(action, filepath)
 
 def get_level(xp):
     return xp // XP_PER_LEVEL
